@@ -1,0 +1,5 @@
+{
+  "name": "Noodle Battle",
+  "description": "A real-time voting application to decide the ultimate noodle dish: Jajangmyeon vs Jjamppong.",
+  "requestFramePermissions": []
+}
