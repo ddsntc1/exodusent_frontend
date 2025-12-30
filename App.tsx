@@ -1,9 +1,10 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
-import { VoteContextType, VoteCounts, Option } from './types';
+import { VoteContextType } from './types';
 import VotePage from './pages/VotePage';
 import ResultPage from './pages/ResultPage';
 import { UtensilsCrossed, BarChart3 } from 'lucide-react';
+import { getPoll, getResults, postVote } from './api';
 
 // Context for managing vote state across pages (simulating backend)
 const VoteContext = createContext<VoteContextType | undefined>(undefined);
@@ -17,23 +18,112 @@ export const useVote = () => {
 };
 
 const VoteProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Initialize with some mock data to make the result page look interesting
-  const [votes, setVotes] = useState<VoteCounts>({
-    jajang: 142,
-    jjamppong: 128,
-  });
-  const [hasVoted, setHasVoted] = useState(false);
+  const [poll, setPoll] = useState<VoteContextType['poll']>(null);
+  const [results, setResults] = useState<VoteContextType['results']>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [voterToken, setVoterToken] = useState<string | null>(null);
+  const [lastVotedOptionId, setLastVotedOptionId] = useState<number | null>(null);
 
-  const addVote = (option: Option) => {
-    setVotes((prev) => ({
-      ...prev,
-      [option]: prev[option] + 1,
-    }));
-    setHasVoted(true);
+  const storageKeys = useMemo(() => {
+    if (!poll) {
+      return null;
+    }
+    return {
+      token: `voterToken:${poll.id}`,
+      lastOption: `votedOptionId:${poll.id}`,
+    };
+  }, [poll]);
+
+  const hydrateLocalState = (pollId: number) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const token = window.localStorage.getItem(`voterToken:${pollId}`);
+    const lastOptionRaw = window.localStorage.getItem(`votedOptionId:${pollId}`);
+    const lastOption = lastOptionRaw ? Number(lastOptionRaw) : null;
+    setVoterToken(token);
+    setLastVotedOptionId(Number.isFinite(lastOption) ? lastOption : null);
   };
 
+  const persistLocalState = useCallback((nextToken: string | null, nextOptionId: number | null) => {
+    if (!storageKeys || typeof window === 'undefined') {
+      return;
+    }
+    if (nextToken) {
+      window.localStorage.setItem(storageKeys.token, nextToken);
+    }
+    if (nextOptionId === null) {
+      window.localStorage.removeItem(storageKeys.lastOption);
+    } else {
+      window.localStorage.setItem(storageKeys.lastOption, String(nextOptionId));
+    }
+  }, [storageKeys]);
+
+  const refreshResults = useCallback(async () => {
+    setError(null);
+    try {
+      const nextResults = await getResults();
+      setResults(nextResults);
+      const nextPoll = await getPoll(nextResults.pollId);
+      setPoll(nextPoll);
+      hydrateLocalState(nextPoll.id);
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : '투표 정보를 불러오지 못했습니다.');
+      throw refreshError;
+    }
+  }, []);
+
+  const vote = useCallback(async (optionId: number) => {
+    if (!poll) {
+      throw new Error('활성 투표가 없습니다.');
+    }
+    const response = await postVote(poll.id, optionId, voterToken);
+    setVoterToken(response.voterToken);
+    const nextOptionId = response.action === 'canceled' ? null : response.optionId;
+    setLastVotedOptionId(nextOptionId);
+    persistLocalState(response.voterToken, nextOptionId);
+    await refreshResults();
+    return response;
+  }, [poll, voterToken, persistLocalState, refreshResults]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const load = async () => {
+      try {
+        setIsLoading(true);
+        await refreshResults();
+      } catch (loadError) {
+        if (isMounted) {
+          setError(loadError instanceof Error ? loadError.message : '투표 정보를 불러오지 못했습니다.');
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    };
+    load();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   return (
-    <VoteContext.Provider value={{ votes, addVote, hasVoted }}>
+    <VoteContext.Provider
+      value={{
+        poll,
+        results,
+        isLoading,
+        error,
+        refreshResults,
+        vote,
+        voterToken,
+        lastVotedOptionId,
+        setLastVotedOptionId,
+        setResults,
+      }}
+    >
       {children}
     </VoteContext.Provider>
   );

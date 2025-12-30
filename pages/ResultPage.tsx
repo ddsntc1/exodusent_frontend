@@ -1,25 +1,89 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useVote } from '../App';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { Trophy, TrendingUp, Users } from 'lucide-react';
+import { getWsUrl } from '../api';
 
 const ResultPage: React.FC = () => {
-  const { votes } = useVote();
+  const { poll, results, isLoading, error, refreshResults, setResults } = useVote();
+  const [wsError, setWsError] = useState<string | null>(null);
 
-  const totalVotes = votes.jajang + votes.jjamppong;
-  const jajangPercent = totalVotes === 0 ? 0 : Math.round((votes.jajang / totalVotes) * 100);
-  const jjamppongPercent = totalVotes === 0 ? 0 : Math.round((votes.jjamppong / totalVotes) * 100);
+  const totalVotes = results?.totalVotes ?? 0;
 
-  const chartData = useMemo(() => [
-    { name: '짜장면', value: votes.jajang, color: '#1e293b' }, // slate-800
-    { name: '짬뽕', value: votes.jjamppong, color: '#dc2626' }, // red-600
-  ], [votes]);
+  const chartData = useMemo(() => {
+    if (!results) {
+      return [];
+    }
+    const palette = ['#1e293b', '#dc2626', '#0ea5e9', '#16a34a', '#f97316'];
+    return results.results.map((item, index) => ({
+      name: item.label,
+      value: item.count,
+      color: palette[index % palette.length],
+    }));
+  }, [results]);
 
-  const winner = votes.jajang > votes.jjamppong 
-    ? { name: '짜장면', color: 'text-slate-800', bg: 'bg-slate-100' }
-    : votes.jjamppong > votes.jajang
-    ? { name: '짬뽕', color: 'text-red-600', bg: 'bg-red-50' }
-    : { name: '박빙!', color: 'text-orange-600', bg: 'bg-orange-50' };
+  const winner = useMemo(() => {
+    if (!results || results.results.length === 0) {
+      return { name: '집계 중', color: 'text-slate-500', bar: 'bg-slate-300' };
+    }
+    const maxCount = Math.max(...results.results.map((item) => item.count));
+    const top = results.results.filter((item) => item.count === maxCount);
+    if (top.length !== 1) {
+      return { name: '박빙!', color: 'text-orange-600', bar: 'bg-orange-400' };
+    }
+    return { name: top[0].label, color: 'text-slate-800', bar: 'bg-slate-800' };
+  }, [results]);
+
+  useEffect(() => {
+    refreshResults().catch(() => undefined);
+  }, [refreshResults]);
+
+  useEffect(() => {
+    if (!results?.pollId) {
+      return;
+    }
+
+    setWsError(null);
+    const ws = new WebSocket(getWsUrl(results.pollId));
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'poll_results_updated') {
+          setResults({
+            pollId: data.pollId,
+            totalVotes: data.totalVotes,
+            results: data.results,
+          });
+        }
+      } catch (parseError) {
+        setWsError(parseError instanceof Error ? parseError.message : '실시간 메시지 처리 실패');
+      }
+    };
+    ws.onerror = () => {
+      setWsError('실시간 연결에 실패했습니다.');
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [results?.pollId, setResults]);
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+        <div className="text-slate-500">결과를 불러오는 중...</div>
+      </div>
+    );
+  }
+
+  if (error || !results) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+        <div className="text-slate-600">실시간 결과를 불러올 수 없습니다.</div>
+        {error && <div className="text-sm text-slate-400 mt-2">{error}</div>}
+      </div>
+    );
+  }
 
   return (
     <div className="animate-fade-in">
@@ -30,7 +94,7 @@ const ResultPage: React.FC = () => {
             실시간 투표 현황
           </h1>
           <p className="text-slate-500 mt-2">
-            현재까지 집계된 실시간 결과입니다.
+            {poll ? poll.title : '현재까지 집계된 실시간 결과입니다.'}
           </p>
         </div>
         <div className="bg-white px-4 py-2 rounded-lg shadow-sm border border-slate-200 flex items-center gap-2">
@@ -44,31 +108,29 @@ const ResultPage: React.FC = () => {
         <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
           <div className="text-sm font-medium text-slate-500 mb-1">현재 1위</div>
           <div className={`text-2xl font-bold ${winner.color} flex items-center gap-2`}>
-            {votes.jajang !== votes.jjamppong && <Trophy size={24} />}
+            {winner.name !== '박빙!' && winner.name !== '집계 중' && <Trophy size={24} />}
             {winner.name}
           </div>
           <div className="mt-4 w-full bg-slate-100 rounded-full h-2">
-            <div className={`h-2 rounded-full transition-all duration-500 ${winner.name === '짜장면' ? 'bg-slate-800' : winner.name === '짬뽕' ? 'bg-red-600' : 'bg-orange-400'}`} style={{ width: '100%' }}></div>
+            <div className={`h-2 rounded-full transition-all duration-500 ${winner.bar}`} style={{ width: '100%' }}></div>
           </div>
         </div>
 
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
-          <div className="flex justify-between items-center mb-2">
-            <div className="text-sm font-medium text-slate-500">짜장면 득표</div>
-            <div className="text-xs font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded">{jajangPercent}%</div>
-          </div>
-          <div className="text-3xl font-black text-slate-800 mb-1">{votes.jajang}</div>
-          <div className="text-xs text-slate-400">Votes</div>
-        </div>
-
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
-          <div className="flex justify-between items-center mb-2">
-            <div className="text-sm font-medium text-slate-500">짬뽕 득표</div>
-            <div className="text-xs font-bold bg-red-50 text-red-600 px-2 py-1 rounded">{jjamppongPercent}%</div>
-          </div>
-          <div className="text-3xl font-black text-red-600 mb-1">{votes.jjamppong}</div>
-          <div className="text-xs text-slate-400">Votes</div>
-        </div>
+        {results.results.slice(0, 2).map((item, index) => {
+          const percent = totalVotes === 0 ? 0 : Math.round((item.count / totalVotes) * 100);
+          const badge = index === 0 ? 'bg-slate-100 text-slate-700' : 'bg-red-50 text-red-600';
+          const valueColor = index === 0 ? 'text-slate-800' : 'text-red-600';
+          return (
+            <div key={item.optionId} className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
+              <div className="flex justify-between items-center mb-2">
+                <div className="text-sm font-medium text-slate-500">{item.label} 득표</div>
+                <div className={`text-xs font-bold px-2 py-1 rounded ${badge}`}>{percent}%</div>
+              </div>
+              <div className={`text-3xl font-black mb-1 ${valueColor}`}>{item.count}</div>
+              <div className="text-xs text-slate-400">Votes</div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -144,6 +206,12 @@ const ResultPage: React.FC = () => {
           실시간 집계 중
         </div>
       </div>
+
+      {wsError && (
+        <div className="mt-4 text-center text-xs text-slate-400">
+          {wsError}
+        </div>
+      )}
     </div>
   );
 };
